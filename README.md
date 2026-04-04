@@ -11,7 +11,7 @@ Indicador de Tendencia: Flechas dinámicas que indican si el avión está ascend
 🛠️ Hardware Necesario
 Microcontrolador: ESP32-S3 DevKit (N16R8).
 Pantalla: TFT 2.4" SPI ILI9341 (320x240).
-Caja Impresa en 3D: Diseño disponible en MakerWorld
+Caja Impresa en 3D: Diseño disponible en MakerWorld https://makerworld.com/es/models/2609328-case-for-esp32-and-2-4-inch-tft-screen
 
 🔌 Conexión (Pines ESP32-S3)
 <img width="492" height="464" alt="Captura de pantalla 2026-04-04 150750" src="https://github.com/user-attachments/assets/dfd985e3-7a16-4579-9320-cab3ac2bd5ff" />
