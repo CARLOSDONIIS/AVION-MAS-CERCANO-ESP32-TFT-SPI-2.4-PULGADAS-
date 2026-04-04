@@ -1,0 +1,449 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+#include <math.h>
+#include <vector>
+#include <algorithm>
+
+#define TFT_CS   10
+#define TFT_DC    8
+#define TFT_RST   9
+#define TFT_MOSI 11
+#define TFT_SCLK 12
+#define TFT_MISO 13
+
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+
+const char* ssid     = "Tu WIFI";
+const char* password = "TU CONTRASEÑA DEL WIFI";
+const char* apiUser  = "TU USUARIO DE LA API DE OPENSKY";
+const char* apiPass  = "TU CONTRASEÑA DE LA API DE OPENSKY";
+
+float myLat   = TU LATITUD;
+float myLon   = TU LONGITUD;
+float maxDist = 250;
+
+unsigned long lastUpdate = 0;
+const int updateInterval = 30;
+int countdown = 30;
+bool modoRadar = false;
+
+// Verde lima fosforescente para la cuadrícula del radar
+#define COLOR_RADAR_GRID  0x07C0
+
+struct Avion {
+    String vuelo;
+    String pais;
+    float lat;
+    float lon;
+    float dist;
+    int alt;
+    int vel;
+    float rumbo;        // -1.0 si el avión no reporta rumbo
+    float tasaVertical;
+    bool enTierra;
+};
+
+std::vector<Avion> listaActual;
+uint16_t coloresAvion[3] = { ILI9341_YELLOW, ILI9341_CYAN, ILI9341_MAGENTA };
+
+// ================================================================
+// FUNCIONES MATEMÁTICAS
+// ================================================================
+
+float calcularDistancia(float lat1, float lon1, float lat2, float lon2) {
+    float dLat = (lat2 - lat1) * M_PI / 180.0;
+    float dLon = (lon2 - lon1) * M_PI / 180.0;
+    float a = sin(dLat/2)*sin(dLat/2) +
+              cos(lat1*M_PI/180.0)*cos(lat2*M_PI/180.0)*
+              sin(dLon/2)*sin(dLon/2);
+    return 6371.0 * (2 * atan2(sqrt(a), sqrt(1-a)));
+}
+
+String rumboATexto(float grados) {
+    if (grados < 0)                        return "N/D";
+    if (grados >= 337.5 || grados < 22.5) return "NORTE";
+    if (grados < 67.5)                    return "NORESTE";
+    if (grados < 112.5)                   return "ESTE";
+    if (grados < 157.5)                   return "SURESTE";
+    if (grados < 202.5)                   return "SUR";
+    if (grados < 247.5)                   return "SUROESTE";
+    if (grados < 292.5)                   return "OESTE";
+    if (grados < 337.5)                   return "NOROESTE";
+    return "N/D";
+}
+
+// ================================================================
+// PANTALLA TEXTO
+// ================================================================
+
+void actualizarSoloContador(int segundos) {
+    tft.fillRect(255, 4, 65, 18, ILI9341_DARKGREEN);
+    tft.setTextSize(2);
+    tft.setCursor(255, 4);
+    tft.setTextColor(ILI9341_YELLOW);
+    tft.printf("%ds", segundos);
+}
+
+void dibujarHeader(int totalAviones, int seg) {
+    tft.fillRect(0, 0, 320, 24, ILI9341_DARKGREEN);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 4);
+    tft.printf("%d AVIONES", totalAviones);
+    tft.setCursor(170, 4);
+    tft.print("ACT EN: ");
+    actualizarSoloContador(seg);
+}
+
+void actualizarPantalla(std::vector<Avion>& lista) {
+    tft.fillScreen(ILI9341_BLACK);
+    dibujarHeader(lista.size(), countdown);
+
+    if (lista.empty()) {
+        tft.setTextColor(ILI9341_RED);
+        tft.setTextSize(2);
+        tft.setCursor(85, 110);
+        tft.println("SIN TRAFICO");
+        return;
+    }
+
+    Avion p = lista[0];
+    tft.setTextColor(ILI9341_YELLOW);
+    tft.setTextSize(3);
+    tft.setCursor(8, 35);
+    tft.println(p.vuelo);
+
+    tft.setTextSize(1);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(8, 62);
+    tft.print("PAIS:");
+    tft.setTextSize(2);
+    tft.setCursor(8, 74);
+    tft.println(p.pais.substring(0, 14));
+
+    tft.setTextSize(2);
+    tft.setTextColor(ILI9341_CYAN);
+    tft.setCursor(8, 100);
+    tft.printf("DST: %.1f km", p.dist);
+
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(8, 125);
+    tft.printf("ALT: %d m ", p.alt);
+
+    if (p.tasaVertical > 0.5) {
+        tft.setTextColor(ILI9341_GREEN);
+        tft.print((char)30);
+    } else if (p.tasaVertical < -0.5) {
+        tft.setTextColor(ILI9341_RED);
+        tft.print((char)31);
+    }
+
+    tft.setTextColor(ILI9341_GREEN);
+    tft.setCursor(8, 150);
+    tft.printf("VEL: %d km/h", p.vel);
+
+    tft.setTextColor(ILI9341_LIGHTGREY);
+    tft.setCursor(8, 175);
+    tft.printf("RMB: %d", (int)(p.rumbo < 0 ? 0 : p.rumbo));
+    tft.print((char)247);
+    tft.setCursor(8, 195);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.print(rumboATexto(p.rumbo));
+
+    tft.setCursor(8, 220);
+    tft.setTextColor(ILI9341_MAGENTA);
+    tft.print(p.enTierra ? "EN PISTA" : "EN VUELO");
+
+    tft.drawFastVLine(180, 30, 210, ILI9341_DARKGREY);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(190, 32);
+    tft.print("OTROS CERCANOS");
+
+    int y = 50;
+    for (size_t i = 1; i < lista.size() && i <= 3; i++) {
+        tft.setTextColor(ILI9341_YELLOW);
+        tft.setTextSize(2);
+        tft.setCursor(190, y);
+        tft.print(lista[i].vuelo);
+
+        tft.setTextColor(ILI9341_CYAN);
+        tft.setCursor(190, y + 18);
+        tft.printf("%.0f km", lista[i].dist);
+
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setCursor(190, y + 36);
+        tft.printf("%d m", lista[i].alt);
+
+        y += 65;
+    }
+}
+
+// ================================================================
+// PANTALLA RADAR
+// ================================================================
+
+void dibujarFlecha(int px, int py, float rumbo, uint16_t color) {
+    if (rumbo < 0) {
+        tft.fillCircle(px, py, 8, color);
+        tft.fillCircle(px, py, 5, ILI9341_BLACK);
+        return;
+    }
+
+    float angle = rumbo * M_PI / 180.0f;
+    float cosA  = cos(angle);
+    float sinA  = sin(angle);
+    float sz    = 12.0f;
+
+    float pts[3][2] = {
+        {  0.0f,      -sz        },
+        { -sz * 0.55f, sz * 0.55f},
+        {  sz * 0.55f, sz * 0.55f}
+    };
+
+    int rx[3], ry[3];
+    for (int j = 0; j < 3; j++) {
+        rx[j] = px + (int)(pts[j][0]*cosA - pts[j][1]*sinA);
+        ry[j] = py + (int)(pts[j][0]*sinA + pts[j][1]*cosA);
+    }
+    tft.fillTriangle(rx[0], ry[0], rx[1], ry[1], rx[2], ry[2], color);
+    tft.drawTriangle(rx[0], ry[0], rx[1], ry[1], rx[2], ry[2], ILI9341_WHITE);
+}
+
+void actualizarContadorRadar(int seg) {
+    tft.fillRect(0, 0, 55, 18, ILI9341_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(ILI9341_YELLOW);
+    tft.setCursor(2, 2);
+    tft.printf("%ds", seg);
+}
+
+void dibujarPantallaRadar() {
+    tft.fillScreen(ILI9341_BLACK);
+
+    const int cx = 100;
+    const int cy = 120;
+    const int radarR = 85;
+
+    // --- CÁLCULO DE ZOOM DINÁMICO ---
+    float zoomDist = 10.0; // Mínimo 10km para que no se vea vacío
+    int count = min((int)listaActual.size(), 3);
+    
+    if (count > 0) {
+        // Tomamos el avión más lejano de los que vamos a mostrar para ajustar el círculo exterior
+        zoomDist = listaActual[count - 1].dist;
+        if (zoomDist < 10.0) zoomDist = 10.0;
+        if (zoomDist > 250.0) zoomDist = 250.0;
+    }
+    
+    float scale = (float)radarR / zoomDist;
+
+    // Cuadrícula del radar
+    tft.drawCircle(cx, cy, radarR,       COLOR_RADAR_GRID);
+    tft.drawCircle(cx, cy, radarR * 2/3, COLOR_RADAR_GRID);
+    tft.drawCircle(cx, cy, radarR / 3,   COLOR_RADAR_GRID);
+
+    tft.drawFastVLine(cx, cy - radarR - 5, (radarR + 5) * 2, COLOR_RADAR_GRID);
+    tft.drawFastHLine(cx - radarR - 5, cy, (radarR + 5) * 2, COLOR_RADAR_GRID);
+
+    // Indicador de rango de escala
+    tft.setTextSize(1);
+    tft.setTextColor(ILI9341_DARKGREY);
+    tft.setCursor(10, 225);
+    tft.printf("Escala: %.0f km", zoomDist);
+
+    tft.setTextColor(COLOR_RADAR_GRID);
+    tft.setCursor(cx - 3, cy - radarR - 10); tft.print("N");
+    tft.setCursor(cx - 3, cy + radarR +  3); tft.print("S");
+    tft.setCursor(cx + radarR + 3, cy - 3);  tft.print("E");
+    tft.setCursor(cx - radarR - 9, cy - 3);  tft.print("O");
+
+    tft.fillCircle(cx, cy, 4, ILI9341_RED); // Mi posición
+    tft.drawFastVLine(192, 0, 240, ILI9341_DARKGREY);
+
+    if (listaActual.empty()) {
+        tft.setTextColor(ILI9341_RED);
+        tft.setTextSize(2);
+        tft.setCursor(10, 113);
+        tft.print("SIN TRAFICO");
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        Avion& av = listaActual[i];
+
+        float lonDiff = (av.lon - myLon) * cos(myLat * M_PI / 180.0f);
+        float latDiff = av.lat - myLat;
+        
+        // El factor 111.32 convierte grados a km aproximadamente
+        int px = cx + (int)(lonDiff * 111.32f * scale);
+        int py = cy - (int)(latDiff * 111.32f * scale);
+
+        // Constrain para no dibujar fuera del área del radar (aunque el zoom debería evitarlo)
+        px = constrain(px, 15, 183);
+        py = constrain(py, 30, 220);
+
+        // Etiqueta del número sobre el avión
+        tft.fillRect(px - 4, py - 26, 8, 9, ILI9341_BLACK);
+        tft.setTextSize(1);
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setCursor(px - 3, py - 26);
+        tft.printf("%d", i + 1);
+
+        dibujarFlecha(px, py, av.rumbo, coloresAvion[i]);
+
+        // Panel lateral derecho
+        const int panelX = 196;
+        const int panelY = i * 80;
+
+        tft.fillRect(panelX, panelY + 8, 5, 5, coloresAvion[i]);
+        tft.setTextSize(2);
+        tft.setTextColor(coloresAvion[i]);
+        tft.setCursor(panelX + 9, panelY + 5);
+        tft.print(av.vuelo.substring(0, 8));
+
+        tft.setTextColor(ILI9341_CYAN);
+        tft.setCursor(panelX + 2, panelY + 24);
+        tft.printf("%.1fkm", av.dist);
+
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setCursor(panelX + 2, panelY + 43);
+        tft.printf("%dkm/h", av.vel);
+
+        tft.setTextSize(1);
+        tft.setTextColor(ILI9341_LIGHTGREY);
+        tft.setCursor(panelX + 2, panelY + 64);
+        tft.print(rumboATexto(av.rumbo));
+
+        if (i < count - 1) {
+            tft.drawFastHLine(194, (i + 1) * 80, 126, ILI9341_DARKGREY);
+        }
+    }
+}
+
+// ================================================================
+// OBTENCIÓN DE DATOS
+// ================================================================
+
+void obtenerDatos() {
+    if (WiFi.status() != WL_CONNECTED) {
+        modoRadar = false;
+        actualizarPantalla(listaActual);
+        return;
+    }
+
+    HTTPClient http;
+    float range = 1.5;
+    String url = "https://opensky-network.org/api/states/all?lamin=" + String(myLat - range) +
+                 "&lomin=" + String(myLon - range) +
+                 "&lamax=" + String(myLat + range) +
+                 "&lomax=" + String(myLon + range);
+
+    http.begin(url);
+    if (apiUser != "") http.setAuthorization(apiUser, apiPass);
+
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+        String payload = http.getString();
+        DynamicJsonDocument doc(20000);
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (!error) {
+            JsonArray states = doc["states"];
+            if (!states.isNull()) {
+                listaActual.clear();
+                for (JsonArray s : states) {
+                    if (s[5].isNull() || s[6].isNull()) continue;
+                    float d = calcularDistancia(myLat, myLon, s[6], s[5]);
+
+                    if (d <= maxDist) {
+                        Avion av;
+                        String callsign = s[1].as<String>();
+                        callsign.trim();
+                        av.vuelo         = (callsign == "" || callsign == "null") ? s[0].as<String>() : callsign;
+                        av.pais          = s[2].as<String>();
+                        av.lat           = s[6].as<float>();
+                        av.lon           = s[5].as<float>();
+                        av.dist          = d;
+                        av.alt           = s[7].isNull() ? 0 : (int)s[7].as<float>();
+                        av.vel           = s[9].isNull() ? 0 : (int)(s[9].as<float>() * 3.6f);
+                        av.tasaVertical  = s[11].isNull() ? 0.0f : s[11].as<float>();
+                        av.enTierra      = s[8].as<bool>();
+
+                        if (s[10].isNull()) {
+                            av.rumbo = -1.0f;
+                        } else {
+                            float r = s[10].as<float>();
+                            av.rumbo = (r >= 0.0f && r <= 360.0f) ? r : -1.0f;
+                        }
+                        listaActual.push_back(av);
+                    }
+                }
+                std::sort(listaActual.begin(), listaActual.end(), [](const Avion& a, const Avion& b) {
+                    return a.dist < b.dist;
+                });
+            }
+        }
+    }
+    http.end();
+    
+    modoRadar = false;
+    actualizarPantalla(listaActual);
+}
+
+// ================================================================
+// SETUP & LOOP
+// ================================================================
+
+void setup() {
+    Serial.begin(115200);
+    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
+    tft.begin();
+    tft.setRotation(1);
+    tft.fillScreen(ILI9341_BLACK);
+
+    tft.setTextColor(ILI9341_GREEN);
+    tft.setCursor(10, 100);
+    tft.setTextSize(2);
+    tft.println("Conectando WiFi...");
+
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) { delay(500); }
+
+    tft.fillScreen(ILI9341_BLACK);
+    obtenerDatos();
+    lastUpdate = millis();
+    countdown  = updateInterval;
+}
+
+void loop() {
+    unsigned long currentMillis = millis();
+
+    static unsigned long lastTick = 0;
+    if (currentMillis - lastTick >= 1000) {
+        lastTick = currentMillis;
+
+        if (countdown > 0) {
+            countdown--;
+            if (countdown == 15 && !listaActual.empty()) {
+                modoRadar = true;
+                dibujarPantallaRadar();
+            } else if (modoRadar) {
+                actualizarContadorRadar(countdown);
+            } else {
+                actualizarSoloContador(countdown);
+            }
+        }
+    }
+
+    if (currentMillis - lastUpdate >= (unsigned long)(updateInterval * 1000)) {
+        lastUpdate = currentMillis;
+        countdown  = updateInterval;
+        modoRadar = false;
+        obtenerDatos();
+    }
+}
