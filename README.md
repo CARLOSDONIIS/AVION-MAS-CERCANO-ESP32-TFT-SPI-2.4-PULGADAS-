@@ -1,2 +1,5 @@
-# AVION-MAS-CERCANO-ESP32-TFT-SPI-2.4-PULGADAS-
-Muestra en la pantalla la informacion de los 4 aviones mas cercanos y despues de 15 segundos el radar de posicion
+[README del Proyecto (1).pdf](https://github.com/user-attachments/files/26484684/README.del.Proyecto.1.pdf)
+![1775165252482](https://github.com/user-attachments/assets/1207ecf6-a79d-4297-89da-beba4f4cc232)
+![WhatsApp Image 2026-04-04 at 3 01 33 PM](https://github.com/user-attachments/assets/9239f7b3-ac9a-4865-b40f-597752120dc4)
+![1775165252517](https://github.com/user-attachments/assets/ae604067-aba0-4d07-b601-85584b8950b3)
+![1775165252638](https://github.com/user-attachments/assets/fd993239-2f18-4576-bfa9-af636feb23a3)
